@@ -1,0 +1,11 @@
+name: vault_crypto
+description: Versioned cryptographic contracts for Citizen Vault.
+publish_to: none
+version: 0.2.0
+environment:
+  sdk: ^3.12.1
+resolution: workspace
+dependencies:
+  cryptography: 2.9.0
+dev_dependencies:
+  test: 1.31.0

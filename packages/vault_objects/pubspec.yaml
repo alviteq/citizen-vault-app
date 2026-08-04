@@ -1,0 +1,15 @@
+name: vault_objects
+description: Streamed encrypted object-store boundary for Citizen Vault.
+publish_to: none
+version: 0.7.0
+environment:
+  sdk: ^3.12.1
+resolution: workspace
+dependencies:
+  cryptography: 2.9.0
+  drift: 2.32.1
+  meta: 1.18.0
+  vault_crypto: 0.2.0
+  vault_database: 0.9.0
+dev_dependencies:
+  test: 1.31.0

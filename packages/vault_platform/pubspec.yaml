@@ -1,0 +1,24 @@
+name: vault_platform
+description: Native security and operating-system adapters for Citizen Vault.
+publish_to: none
+version: 0.2.0
+environment:
+  sdk: ^3.12.1
+  flutter: '>=3.44.0'
+resolution: workspace
+dependencies:
+  flutter:
+    sdk: flutter
+  vault_crypto: 0.2.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: app.citizenvault.vault_platform
+        pluginClass: VaultPlatformPlugin
+      ios:
+        pluginClass: VaultPlatformPlugin

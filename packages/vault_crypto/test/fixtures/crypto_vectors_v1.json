@@ -1,0 +1,29 @@
+{
+  "format": "citizen-vault-crypto-vectors",
+  "version": 1,
+  "recovery_envelope_hex": "4356524500010102000927c000000000000100200010404142434445464748494a4b4c4d4e4f0c808182838485868788898a8b000000006a58c7c0f0e956b4b5b12d55eda7a5494786759d0be63a0104b2ed6f4f3dc5eefac6d8bc0020859224b415e6a6ef3e95b24f63bef13c6db5d4e359677e625dc249d1e818a69e100e673cde871b41a6e384c67c611ec03a",
+  "subkeys": {
+    "database": "c3e9ac5f5af4d727335d3b3836fa29eb0afaeaa49c459bd5567bc344a8c8d266",
+    "fileRoot": "e74bfe74139ec8a3f965e34ef2ce5ef14186b6e38463bd4878bb8f69e0e5089e",
+    "backup": "22c479f643b229690bf594326e52e9aabd3147dd307b9383c63678cedaf19187",
+    "metadata": "9b66246f7e181361ba810bf5982867024ddf088cb4c8ef930045d8bd3e694ffd",
+    "audit": "1b3955b6530f862863c4b563f768f1a7fa6649b813d042ec3f50f40340899c35"
+  },
+  "file_key_wrap": {
+    "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacb",
+    "ciphertext_hex": "4c6139f03ac5e482e64f99c7fd691aaae0dd11165016789e6e416ea7f66411ff",
+    "tag_hex": "4daa9ed9591d6c6101a3c37e96659c9b"
+  },
+  "chunk_nonce_index_5_hex": "d0d1d2d3d4d5d6d700000005",
+  "chunk_encryption": {
+    "nonce_hex": "d0d1d2d3d4d5d6d700000005",
+    "ciphertext_hex": "feaff877b953affc5a7f7cbdc9d172383f35eb5c52cb230515be",
+    "tag_hex": "0e7efdb62efd2b3ed61a8c82271a2969"
+  },
+  "manifest_encryption": {
+    "nonce_hex": "e0e1e2e3e4e5e6e7e8e9eaeb",
+    "ciphertext_hex": "5099133b6618afb0cf71335dd6acf3d8fc903b58a751",
+    "tag_hex": "d75bc3bf5eb12d60f4f98d15de1a20a5"
+  }
+}
+

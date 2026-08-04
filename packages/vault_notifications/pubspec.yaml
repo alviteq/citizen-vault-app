@@ -1,0 +1,14 @@
+name: vault_notifications
+description: Local reminder and notification boundary for Citizen Vault.
+publish_to: none
+version: 0.9.0
+environment:
+  sdk: ^3.12.1
+resolution: workspace
+dependencies:
+  drift: 2.32.1
+  vault_crypto: 0.2.0
+  vault_database: 0.9.0
+  vault_domain: 0.9.0
+dev_dependencies:
+  test: 1.31.0

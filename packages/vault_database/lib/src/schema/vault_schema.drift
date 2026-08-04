@@ -1,0 +1,707 @@
+CREATE TABLE vault_metadata (
+  id TEXT NOT NULL PRIMARY KEY,
+  vault_id TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  database_schema_version INTEGER NOT NULL,
+  encryption_format_version INTEGER NOT NULL,
+  backup_format_version INTEGER NOT NULL,
+  object_format_version INTEGER NOT NULL,
+  hkdf_salt BLOB NOT NULL,
+  active_database_key_version INTEGER NOT NULL,
+  active_file_root_key_version INTEGER NOT NULL,
+  active_backup_key_version INTEGER NOT NULL
+);
+
+CREATE TABLE schema_versions (
+  version INTEGER NOT NULL PRIMARY KEY,
+  applied_at INTEGER NOT NULL,
+  schema_sha256 TEXT NOT NULL
+);
+
+CREATE TABLE documents (
+  id TEXT NOT NULL PRIMARY KEY,
+  logical_filename TEXT NOT NULL,
+  document_type TEXT,
+  mime_type TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  primary_object_id TEXT NOT NULL,
+  plaintext_sha256 BLOB NOT NULL CHECK(length(plaintext_sha256) = 32),
+  plaintext_size INTEGER NOT NULL CHECK(plaintext_size >= 0),
+  encrypted_size INTEGER NOT NULL CHECK(encrypted_size >= 0),
+  original_created_at INTEGER,
+  imported_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  verified_at INTEGER,
+  integrity_status TEXT NOT NULL,
+  is_favourite INTEGER NOT NULL DEFAULT 0 CHECK(is_favourite IN (0, 1)),
+  is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
+  deleted_at INTEGER
+);
+
+CREATE INDEX documents_imported_at ON documents(imported_at DESC);
+CREATE INDEX documents_explicit_type ON documents(document_type);
+CREATE INDEX documents_active ON documents(deleted_at, is_archived);
+
+CREATE TABLE document_assets (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  object_id TEXT NOT NULL,
+  asset_type TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  pipeline_version INTEGER,
+  created_at INTEGER NOT NULL,
+  deleted_at INTEGER
+);
+
+CREATE INDEX document_assets_document ON document_assets(document_id);
+CREATE UNIQUE INDEX document_assets_live_object
+  ON document_assets(document_id, object_id, asset_type)
+  WHERE deleted_at IS NULL;
+
+CREATE TABLE document_text (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  page_number INTEGER,
+  raw_text TEXT NOT NULL,
+  normalized_text TEXT,
+  ocr_engine_id TEXT NOT NULL,
+  ocr_engine_version TEXT NOT NULL,
+  ocr_pipeline_version INTEGER NOT NULL,
+  language_codes TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX document_text_document_page
+  ON document_text(document_id, page_number);
+
+CREATE VIRTUAL TABLE document_fts USING fts5(
+  document_id UNINDEXED,
+  logical_filename,
+  ocr_text,
+  document_type,
+  issuer,
+  document_number,
+  tags,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE TABLE document_classifications (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  document_type TEXT NOT NULL,
+  confidence REAL,
+  classifier_id TEXT NOT NULL,
+  classifier_version TEXT NOT NULL,
+  evidence_json TEXT,
+  confirmed_by_user INTEGER NOT NULL DEFAULT 0
+    CHECK(confirmed_by_user IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX classifications_document ON document_classifications(document_id);
+
+CREATE TABLE extracted_fields (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  field_type TEXT NOT NULL,
+  raw_value TEXT,
+  normalized_value TEXT,
+  confidence REAL,
+  source_page INTEGER,
+  source_block_id TEXT,
+  extractor_id TEXT NOT NULL,
+  extractor_version TEXT NOT NULL,
+  confirmed_by_user INTEGER NOT NULL DEFAULT 0
+    CHECK(confirmed_by_user IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX extracted_fields_document_type
+  ON extracted_fields(document_id, field_type);
+
+CREATE TABLE document_tags (
+  id TEXT NOT NULL PRIMARY KEY,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE document_tag_links (
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  tag_id TEXT NOT NULL REFERENCES document_tags(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(document_id, tag_id)
+);
+
+CREATE TABLE reminders (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  reminder_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  due_at INTEGER NOT NULL,
+  recurrence_rule TEXT,
+  is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
+  notification_id INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+
+CREATE INDEX reminders_due ON reminders(is_enabled, due_at);
+
+CREATE TABLE processing_jobs (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  pipeline_version INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 100,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  available_after INTEGER,
+  lease_owner TEXT,
+  lease_expires_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+
+CREATE INDEX processing_jobs_claim
+  ON processing_jobs(status, available_after, priority, created_at);
+
+CREATE TABLE processing_job_steps (
+  id TEXT NOT NULL PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES processing_jobs(id) ON DELETE CASCADE,
+  step_name TEXT NOT NULL,
+  step_version INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  input_fingerprint TEXT,
+  output_reference TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  error_message TEXT,
+  started_at INTEGER,
+  completed_at INTEGER,
+  UNIQUE(job_id, step_name, step_version)
+);
+
+CREATE TABLE backup_generations (
+  id TEXT NOT NULL PRIMARY KEY,
+  status TEXT NOT NULL,
+  snapshot_path_token TEXT,
+  archive_path_token TEXT,
+  object_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  verified_at INTEGER,
+  error_code TEXT
+);
+
+CREATE TABLE backup_generation_objects (
+  generation_id TEXT NOT NULL REFERENCES backup_generations(id) ON DELETE CASCADE,
+  object_id TEXT NOT NULL,
+  plaintext_sha256 BLOB NOT NULL CHECK(length(plaintext_sha256) = 32),
+  encrypted_size INTEGER NOT NULL,
+  required_until INTEGER,
+  status TEXT NOT NULL DEFAULT 'INVENTORIED',
+  PRIMARY KEY(generation_id, object_id)
+);
+
+CREATE TABLE object_references (
+  object_id TEXT NOT NULL PRIMARY KEY,
+  reference_count INTEGER NOT NULL CHECK(reference_count >= 0),
+  plaintext_sha256 BLOB NOT NULL CHECK(length(plaintext_sha256) = 32),
+  plaintext_size INTEGER NOT NULL CHECK(plaintext_size >= 0),
+  encrypted_size INTEGER NOT NULL CHECK(encrypted_size >= 0),
+  object_format_version INTEGER NOT NULL DEFAULT 1,
+  key_version INTEGER NOT NULL DEFAULT 1,
+  chunk_count INTEGER NOT NULL DEFAULT 0 CHECK(chunk_count >= 0),
+  verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+  last_verified_at INTEGER,
+  created_at INTEGER NOT NULL,
+  last_referenced_at INTEGER NOT NULL
+);
+
+CREATE TABLE object_tombstones (
+  object_id TEXT NOT NULL PRIMARY KEY,
+  reason TEXT NOT NULL,
+  tombstoned_at INTEGER NOT NULL,
+  eligible_for_deletion_at INTEGER NOT NULL,
+  deleted_at INTEGER
+);
+
+CREATE INDEX object_tombstones_due
+  ON object_tombstones(deleted_at, eligible_for_deletion_at);
+
+CREATE TABLE audit_events (
+  id TEXT NOT NULL PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  subject_type TEXT,
+  subject_id TEXT,
+  encrypted_payload BLOB,
+  previous_event_hash BLOB,
+  event_hash BLOB NOT NULL CHECK(length(event_hash) = 32),
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX audit_events_created ON audit_events(created_at);
+
+CREATE TABLE app_settings (
+  setting_key TEXT NOT NULL PRIMARY KEY,
+  setting_value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE ocr_engines (
+  id TEXT NOT NULL PRIMARY KEY,
+  engine_version TEXT NOT NULL,
+  model_version TEXT,
+  is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
+  installed_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE pipeline_versions (
+  version INTEGER NOT NULL PRIMARY KEY,
+  configuration_sha256 TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 0 CHECK(is_active IN (0, 1)),
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE entities (
+  id TEXT NOT NULL PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  subtype TEXT,
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  archived_at INTEGER,
+  CHECK(status IN ('ACTIVE', 'ARCHIVED'))
+);
+
+CREATE INDEX entities_type_status ON entities(entity_type, status);
+CREATE INDEX entities_name ON entities(display_name COLLATE NOCASE);
+
+CREATE TABLE entity_attributes (
+  id TEXT NOT NULL PRIMARY KEY,
+  entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE RESTRICT,
+  attribute_key TEXT NOT NULL,
+  value_type TEXT NOT NULL,
+  string_value TEXT,
+  integer_value INTEGER,
+  decimal_value REAL,
+  boolean_value INTEGER CHECK(boolean_value IN (0, 1)),
+  date_value INTEGER,
+  datetime_value INTEGER,
+  money_amount_minor INTEGER,
+  money_currency TEXT,
+  identifier_value TEXT,
+  uri_value TEXT,
+  entity_reference_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(entity_id, attribute_key),
+  CHECK(
+    (value_type = 'STRING' AND string_value IS NOT NULL) OR
+    (value_type = 'INTEGER' AND integer_value IS NOT NULL) OR
+    (value_type = 'DECIMAL' AND decimal_value IS NOT NULL) OR
+    (value_type = 'BOOLEAN' AND boolean_value IS NOT NULL) OR
+    (value_type = 'DATE' AND date_value IS NOT NULL) OR
+    (value_type = 'DATETIME' AND datetime_value IS NOT NULL) OR
+    (value_type = 'MONEY' AND money_amount_minor IS NOT NULL AND money_currency IS NOT NULL) OR
+    (value_type = 'IDENTIFIER' AND identifier_value IS NOT NULL) OR
+    (value_type = 'URI' AND uri_value IS NOT NULL) OR
+    (value_type = 'ENTITY_REFERENCE' AND entity_reference_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX entity_attributes_lookup
+  ON entity_attributes(attribute_key, value_type);
+
+CREATE TABLE provenance_records (
+  id TEXT NOT NULL PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  extractor_id TEXT,
+  extractor_version TEXT,
+  rule_id TEXT,
+  rule_version TEXT,
+  confidence REAL CHECK(confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+  confidence_source TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX provenance_document ON provenance_records(source_document_id);
+
+CREATE TABLE relationships (
+  id TEXT NOT NULL PRIMARY KEY,
+  from_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE RESTRICT,
+  to_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE RESTRICT,
+  relationship_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'SUGGESTED',
+  valid_from INTEGER,
+  valid_until INTEGER,
+  supersedes_id TEXT REFERENCES relationships(id) ON DELETE RESTRICT,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  confirmed_at INTEGER,
+  CHECK(status IN ('SUGGESTED', 'CONFIRMED', 'REJECTED', 'SUPERSEDED')),
+  CHECK(valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from),
+  CHECK(from_entity_id != to_entity_id)
+);
+
+CREATE INDEX relationships_from ON relationships(from_entity_id, status);
+CREATE INDEX relationships_to ON relationships(to_entity_id, status);
+CREATE INDEX relationships_type ON relationships(relationship_type, status);
+
+CREATE TABLE relationship_history (
+  id TEXT NOT NULL PRIMARY KEY,
+  relationship_id TEXT NOT NULL REFERENCES relationships(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  previous_status TEXT,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX relationship_history_relationship
+  ON relationship_history(relationship_id, created_at);
+
+CREATE TABLE claims (
+  id TEXT NOT NULL PRIMARY KEY,
+  subject_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE RESTRICT,
+  predicate TEXT NOT NULL,
+  value_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'SUGGESTED',
+  cardinality TEXT NOT NULL,
+  valid_from INTEGER,
+  valid_until INTEGER,
+  supersedes_id TEXT REFERENCES claims(id) ON DELETE RESTRICT,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  confirmed_at INTEGER,
+  rejected_at INTEGER,
+  CHECK(status IN ('SUGGESTED', 'CONFIRMED', 'REJECTED', 'SUPERSEDED')),
+  CHECK(cardinality IN ('SINGLE_CURRENT', 'MULTIPLE_CURRENT', 'HISTORICAL')),
+  CHECK(valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from)
+);
+
+CREATE INDEX claims_subject_status ON claims(subject_entity_id, status);
+CREATE INDEX claims_predicate_status ON claims(predicate, status);
+
+CREATE TABLE claim_values (
+  id TEXT NOT NULL PRIMARY KEY,
+  claim_id TEXT NOT NULL UNIQUE REFERENCES claims(id) ON DELETE RESTRICT,
+  string_value TEXT,
+  integer_value INTEGER,
+  decimal_value REAL,
+  boolean_value INTEGER CHECK(boolean_value IN (0, 1)),
+  date_value INTEGER,
+  datetime_value INTEGER,
+  money_amount_minor INTEGER,
+  money_currency TEXT,
+  identifier_value TEXT,
+  uri_value TEXT,
+  entity_reference_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  CHECK(
+    COALESCE((string_value IS NOT NULL), 0) +
+    COALESCE((integer_value IS NOT NULL), 0) +
+    COALESCE((decimal_value IS NOT NULL), 0) +
+    COALESCE((boolean_value IS NOT NULL), 0) +
+    COALESCE((date_value IS NOT NULL), 0) +
+    COALESCE((datetime_value IS NOT NULL), 0) +
+    COALESCE((money_amount_minor IS NOT NULL), 0) +
+    COALESCE((identifier_value IS NOT NULL), 0) +
+    COALESCE((uri_value IS NOT NULL), 0) +
+    COALESCE((entity_reference_id IS NOT NULL), 0) = 1
+  ),
+  CHECK(money_amount_minor IS NULL OR money_currency IS NOT NULL)
+);
+
+CREATE TABLE claim_history (
+  id TEXT NOT NULL PRIMARY KEY,
+  claim_id TEXT NOT NULL REFERENCES claims(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  previous_status TEXT,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX claim_history_claim ON claim_history(claim_id, created_at);
+
+CREATE TABLE life_events (
+  id TEXT NOT NULL PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  start_at INTEGER NOT NULL,
+  end_at INTEGER,
+  status TEXT NOT NULL DEFAULT 'SUGGESTED',
+  amount_minor INTEGER,
+  currency TEXT,
+  location_entity_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  notes TEXT,
+  supersedes_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  confirmed_at INTEGER,
+  rejected_at INTEGER,
+  CHECK(status IN ('SUGGESTED', 'CONFIRMED', 'REJECTED', 'SUPERSEDED')),
+  CHECK(end_at IS NULL OR end_at >= start_at),
+  CHECK(amount_minor IS NULL OR currency IS NOT NULL)
+);
+
+CREATE INDEX life_events_date_status ON life_events(start_at, status);
+CREATE INDEX life_events_type_status ON life_events(event_type, status);
+CREATE INDEX life_events_location ON life_events(location_entity_id);
+
+CREATE TABLE event_entities (
+  id TEXT NOT NULL PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES life_events(id) ON DELETE RESTRICT,
+  entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE RESTRICT,
+  role TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(event_id, entity_id, role)
+);
+
+CREATE INDEX event_entities_event ON event_entities(event_id);
+CREATE INDEX event_entities_entity ON event_entities(entity_id, event_id);
+
+CREATE TABLE event_evidence_links (
+  id TEXT NOT NULL PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES life_events(id) ON DELETE RESTRICT,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE RESTRICT,
+  asset_id TEXT REFERENCES document_assets(id) ON DELETE RESTRICT,
+  evidence_role TEXT NOT NULL,
+  page_number INTEGER,
+  bounding_polygon_json TEXT,
+  text_fragment_hash BLOB,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX event_evidence_event ON event_evidence_links(event_id);
+CREATE INDEX event_evidence_document ON event_evidence_links(document_id);
+
+CREATE TABLE event_history (
+  id TEXT NOT NULL PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES life_events(id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  previous_status TEXT,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX event_history_event ON event_history(event_id, created_at);
+
+CREATE TABLE derived_states (
+  id TEXT NOT NULL PRIMARY KEY,
+  subject_entity_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  state_kind TEXT NOT NULL,
+  rule_id TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  explanation TEXT NOT NULL,
+  calculated_at INTEGER NOT NULL,
+  source_claim_id TEXT REFERENCES claims(id) ON DELETE RESTRICT,
+  source_event_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  source_document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  evidence_document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  input_fingerprint TEXT,
+  CHECK(state_kind IN ('OK', 'UNKNOWN', 'INCOMPLETE', 'MISSING',
+    'EXPIRES_SOON', 'EXPIRED', 'OVERDUE', 'ACTION_REQUIRED'))
+);
+
+CREATE INDEX derived_states_subject ON derived_states(subject_entity_id);
+CREATE INDEX derived_states_kind ON derived_states(state_kind, calculated_at);
+
+CREATE TABLE state_inputs (
+  id TEXT NOT NULL PRIMARY KEY,
+  state_id TEXT NOT NULL REFERENCES derived_states(id) ON DELETE CASCADE,
+  input_type TEXT NOT NULL,
+  claim_id TEXT REFERENCES claims(id) ON DELETE RESTRICT,
+  event_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  CHECK(
+    COALESCE((claim_id IS NOT NULL), 0) +
+    COALESCE((event_id IS NOT NULL), 0) +
+    COALESCE((document_id IS NOT NULL), 0) = 1
+  )
+);
+
+CREATE INDEX state_inputs_state ON state_inputs(state_id);
+
+CREATE TABLE attention_items (
+  id TEXT NOT NULL PRIMARY KEY,
+  state_id TEXT REFERENCES derived_states(id) ON DELETE CASCADE,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  explanation TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  rule_id TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  due_at INTEGER,
+  entity_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  claim_id TEXT REFERENCES claims(id) ON DELETE RESTRICT,
+  event_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  evidence_document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK(status IN ('ACTIVE', 'RESOLVED', 'DISMISSED')),
+  CHECK(category IN ('EXPIRY', 'MISSING_EVIDENCE', 'DUE_BILL', 'SERVICE',
+    'WARRANTY', 'INBOX', 'INTEGRITY'))
+);
+
+CREATE INDEX attention_items_active
+  ON attention_items(status, priority, due_at);
+CREATE INDEX attention_items_entity ON attention_items(entity_id, status);
+
+CREATE TABLE life_tasks (
+  id TEXT NOT NULL PRIMARY KEY,
+  title TEXT NOT NULL,
+  notes TEXT,
+  origin TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  due_at INTEGER,
+  recurrence_rule TEXT,
+  snoozed_until INTEGER,
+  completed_at INTEGER,
+  dismissed_at INTEGER,
+  source_attention_id TEXT REFERENCES attention_items(id) ON DELETE RESTRICT,
+  entity_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  event_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK(origin IN ('MANUAL', 'GENERATED')),
+  CHECK(status IN ('OPEN', 'COMPLETED', 'DISMISSED'))
+);
+
+CREATE INDEX life_tasks_status_due ON life_tasks(status, due_at);
+CREATE INDEX life_tasks_attention ON life_tasks(source_attention_id);
+
+CREATE TABLE life_checklists (
+  id TEXT NOT NULL PRIMARY KEY,
+  title TEXT NOT NULL,
+  entity_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  event_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  evidence_document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE life_checklist_items (
+  id TEXT NOT NULL PRIMARY KEY,
+  checklist_id TEXT NOT NULL REFERENCES life_checklists(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  is_completed INTEGER NOT NULL DEFAULT 0 CHECK(is_completed IN (0, 1)),
+  completed_at INTEGER,
+  UNIQUE(checklist_id, position)
+);
+
+CREATE INDEX life_checklist_items_checklist
+  ON life_checklist_items(checklist_id, position);
+
+CREATE TABLE smart_packs (
+  id TEXT NOT NULL PRIMARY KEY,
+  title TEXT NOT NULL,
+  pack_type TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  template_version INTEGER NOT NULL CHECK(template_version > 0),
+  country_pack_id TEXT,
+  country_pack_version INTEGER CHECK(country_pack_version IS NULL OR country_pack_version > 0),
+  country_code TEXT,
+  entity_id TEXT REFERENCES entities(id) ON DELETE RESTRICT,
+  guidance_disclaimer TEXT NOT NULL,
+  is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK(pack_type IN ('VEHICLE', 'HOME', 'TRAVEL', 'HEALTH', 'EDUCATION',
+    'EMERGENCY', 'CUSTOM'))
+);
+
+CREATE INDEX smart_packs_active ON smart_packs(is_archived, updated_at);
+CREATE INDEX smart_packs_entity ON smart_packs(entity_id, is_archived);
+
+CREATE TABLE smart_pack_items (
+  id TEXT NOT NULL PRIMARY KEY,
+  pack_id TEXT NOT NULL REFERENCES smart_packs(id) ON DELETE CASCADE,
+  item_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  guidance TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  source_template_id TEXT,
+  source_template_version INTEGER
+    CHECK(source_template_version IS NULL OR source_template_version > 0),
+  claim_predicate TEXT,
+  event_type TEXT,
+  document_type TEXT,
+  is_optional INTEGER NOT NULL DEFAULT 0 CHECK(is_optional IN (0, 1)),
+  is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
+  include_in_export INTEGER NOT NULL DEFAULT 0
+    CHECK(include_in_export IN (0, 1)),
+  linked_claim_id TEXT REFERENCES claims(id) ON DELETE RESTRICT,
+  linked_event_id TEXT REFERENCES life_events(id) ON DELETE RESTRICT,
+  linked_document_id TEXT REFERENCES documents(id) ON DELETE RESTRICT,
+  linked_task_id TEXT REFERENCES life_tasks(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(pack_id, item_key),
+  UNIQUE(pack_id, position)
+);
+
+CREATE INDEX smart_pack_items_pack
+  ON smart_pack_items(pack_id, is_enabled, position);
+CREATE INDEX smart_pack_items_document
+  ON smart_pack_items(linked_document_id);
+
+CREATE TABLE evidence_links (
+  id TEXT NOT NULL PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE RESTRICT,
+  asset_id TEXT REFERENCES document_assets(id) ON DELETE RESTRICT,
+  claim_id TEXT REFERENCES claims(id) ON DELETE RESTRICT,
+  relationship_id TEXT REFERENCES relationships(id) ON DELETE RESTRICT,
+  evidence_role TEXT NOT NULL,
+  page_number INTEGER,
+  bounding_polygon_json TEXT,
+  text_fragment_hash BLOB,
+  provenance_id TEXT REFERENCES provenance_records(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  CHECK((claim_id IS NOT NULL) != (relationship_id IS NOT NULL))
+);
+
+CREATE INDEX evidence_links_document ON evidence_links(document_id);
+CREATE INDEX evidence_links_claim ON evidence_links(claim_id);
+CREATE INDEX evidence_links_relationship ON evidence_links(relationship_id);
+
+CREATE TABLE graph_audit_events (
+  id TEXT NOT NULL PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  subject_type TEXT,
+  subject_id TEXT,
+  payload_json TEXT,
+  previous_event_hash BLOB,
+  event_hash BLOB NOT NULL CHECK(length(event_hash) = 32),
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX graph_audit_events_created ON graph_audit_events(created_at);
+
+allDocuments:
+SELECT * FROM documents
+WHERE deleted_at IS NULL
+ORDER BY imported_at DESC;
+
+searchDocumentIds:
+SELECT document_id, bm25(document_fts) AS relevance
+FROM document_fts
+WHERE document_fts MATCH :search_query
+ORDER BY relevance
+LIMIT :result_limit OFFSET :result_offset;
